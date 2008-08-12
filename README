@@ -1,7 +1,13 @@
 Ruby binding for General Graphics Interface (GGI) 
 Copyright (c) 2003 by Michael Neumann (mneumann@ntecs.de)
 
-Released under the the Ruby license.
+Released under the the Ruby license or alternatively the BSD license.
+polygon.c and ttf.c are under the LGPL license.
 
 http://www.ntecs.de/projects/ruby-ggi
 http://www.ggi-project.org
+
+Requirements:
+* Ruby 1.6.8 or later
+* GGI
+* FreeType

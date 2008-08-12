@@ -8,38 +8,22 @@ class Array
   end
 end
 
-
-# mode == :default (return nil, or integer error number > 0)
-def VIS_TEMPLATE(name, args=nil, mode=:default)
-  args = if args.nil?
-    []
-  elsif args.is_a? Array
-    args
-  else
-    [args]
-  end
-
+def VIS_TEMPLATE(name, args, mode)
+  args = if args.nil? then [] else [args] end
   args.unshift "*vis"
-  # TODO: waring mode?
-%{ggi_visual_t *vis;
-  int err;
+%{
+  VIS_TMPL_BASIC 
 
-  Data_Get_Struct(self, ggi_visual_t, vis);
-
-  if ((err = #{ name }(#{ args.join(", ") })) != 0)
-  {
-    if (err < 0)
-    {
-      rb_raise(eGGI, "#{ name } failed (return value: %d)", err);
-      return Qnil;
-    }
-    else
-    {
-      #{ if mode == :default then "return INT2NUM(err);" else "" end }
-    }
-  }
-  #{ if mode == :default then "return Qnil;" else "" end }
-}
+  err = #{ name }(#{ args.join(", ") });
+} +
+  case mode
+  when :ret
+    %{  VIS_TMPL_RETURN("#{name}") }
+  when :noret
+    %{  VIS_TMPL_NO_RETURN("#{name}") }
+  else
+    raise
+  end
 end
 
 
@@ -53,9 +37,6 @@ __END__
 /*
  * TODO:
  *   visual___free: call to ggiClose failes if ggiExit is called before.
- *   
- *   putHLine, getHLine, packColors, unpackPixels, putVLine, getVLine, 
- *   ggiPutBox, ggiGetBox
  *
  */
 
@@ -63,9 +44,35 @@ __END__
 #include <ggi/ggi.h>
 #include "ruby.h"
 
+
+#define VIS_TMPL_BASIC    \\
+  ggi_visual_t *vis;      \\
+  int err;                \\
+  Data_Get_Struct(self, ggi_visual_t, vis);
+
+#define VIS_TMPL_RETURN(funcname) \\
+  if (err != 0) {                 \\
+    if (err < 0) {                \\
+      FAIL_GGI(funcname);         \\
+    } else {                      \\
+      return INT2NUM(err);        \\
+    }                             \\
+  }                               \\
+  return Qnil;
+
+#define VIS_TMPL_NO_RETURN(funcname) \\
+  if (err < 0) {                     \\
+    FAIL_GGI(funcname);              \\
+    return Qnil;                     \\
+  }                                  \\
+
+
+#define FAIL_GGI(funcname) rb_raise(eGGI, funcname " failed (return value: %d)", err)
+
 static VALUE mGGI;
 static VALUE cVisual;
 static VALUE cColor;
+static VALUE cPixelArray;
 static VALUE cEvent;
 static VALUE cEventCommand;  
 static VALUE cEventExpose;
@@ -73,6 +80,8 @@ static VALUE cEventValuator;
 static VALUE cEventKey;
 static VALUE cEventPtrMove;
 static VALUE cEventPtrButton;
+static VALUE cEventPtrButtonPress;
+static VALUE cEventPtrButtonRelease;
 static VALUE eGGI;
 
 
@@ -83,7 +92,7 @@ ggi_init(VALUE self)
 
   if ((err = ggiInit()) != 0)
   {
-    rb_raise(eGGI, "ggiInit failed (return value: %d)", err);
+    FAIL_GGI("ggiInit");
   }
 
   return Qnil;
@@ -93,22 +102,8 @@ static VALUE
 ggi_exit(VALUE self)
 {
   int err;
-
   err = ggiExit();
-
-  if (err != 0)
-  {
-    if (err > 0)
-    {
-      return INT2NUM(err);
-    }
-    else if (err < 0)
-    {
-      rb_raise(eGGI, "ggiExit failed (return value: %d)", err);
-    }
-  }
-
-  return Qnil;
+  VIS_TMPL_RETURN("ggiExit");
 }
 
 static VALUE
@@ -127,7 +122,7 @@ static void visual___free(void *ptr)
   {
     if ((err = ggiClose(*vis)) != 0)
     {
-      rb_warn("ggi: ggiClose during GC free failed (return value: %d)", err);
+      rb_warning("ggi: ggiClose during GC free failed (return value: %d)", err);
     }
   }
   free(ptr);
@@ -176,7 +171,7 @@ visual_close(VALUE self)
 
   if ((err = ggiClose(*vis)) != 0)
   {
-    rb_raise(eGGI, "ggiClose failed (return value: %d)", err);
+    FAIL_GGI("ggiClose");
   }
 
   *vis = NULL; // mark as closed
@@ -184,28 +179,32 @@ visual_close(VALUE self)
   return Qnil;
 }
 
+
+
+
+
 static VALUE
 visual_setSimpleMode(VALUE self, VALUE xsize, VALUE ysize, VALUE frames, VALUE type)
 {
-  #{ VIS_TEMPLATE(:ggiSetSimpleMode, "NUM2INT(xsize), NUM2INT(ysize), NUM2INT(frames), NUM2UINT(type)") }
+  #{ VIS_TEMPLATE(:ggiSetSimpleMode, "NUM2INT(xsize), NUM2INT(ysize), NUM2INT(frames), NUM2UINT(type)", :ret) }
 }
 
 static VALUE
 visual_setDisplayFrame(VALUE self, VALUE frameno)
 {
-  #{ VIS_TEMPLATE(:ggiSetDisplayFrame, "NUM2INT(frameno)") }
+  #{ VIS_TEMPLATE(:ggiSetDisplayFrame, "NUM2INT(frameno)", :ret) }
 }
 
 static VALUE
 visual_setWriteFrame(VALUE self, VALUE frameno)
 {
-  #{ VIS_TEMPLATE(:ggiSetWriteFrame, "NUM2INT(frameno)") }
+  #{ VIS_TEMPLATE(:ggiSetWriteFrame, "NUM2INT(frameno)", :ret) }
 }
 
 static VALUE
 visual_setReadFrame(VALUE self, VALUE frameno)
 {
-  #{ VIS_TEMPLATE(:ggiSetReadFrame, "NUM2INT(frameno)") }
+  #{ VIS_TEMPLATE(:ggiSetReadFrame, "NUM2INT(frameno)", :ret) }
 }
    
 static VALUE
@@ -258,16 +257,258 @@ visual_unmapPixel(VALUE self, VALUE pixel)
   return res;
 }
 
+// colors: [ Color, Color, ... ]
+// returns: PixelArray object
+// TODO: test
+static VALUE
+visual_packColors(VALUE self, VALUE colors, VALUE length)
+{
+  ggi_visual_t *vis;
+  void *buf;
+  ggi_color *cols, *col;
+  const ggi_pixelformat *pixel_format;
+  int i, err, len;
+
+  if (TYPE(colors) != T_ARRAY)
+  {
+    rb_raise(rb_eArgError, "Array required (colors)");
+    return Qnil;
+  }
+
+  Data_Get_Struct(self, ggi_visual_t, vis);
+  pixel_format = ggiGetPixelFormat(*vis);
+
+  len = NUM2INT(length);
+  buf = xmalloc(sizeof(int) + len*(pixel_format->size/8)); // sizeof(int) for storing the size 
+  cols = ALLOC_N(ggi_color, len); 
+
+  // convert colors to ggi_color array
+  for (i=0; i<len; i++) {
+    Data_Get_Struct(rb_ary_entry(colors, i), ggi_color, col);
+    cols[i] = *col;
+  }
+
+  *((int*)buf) = len; // store the size in the first sizeof(int) bytes
+  err = ggiPackColors(*vis, (void*)buf+sizeof(int), cols, len); 
+  if (err < 0) {
+    free(cols);
+    free(buf);
+    FAIL_GGI("ggiPackColors");
+    return Qnil;
+  }
+
+  return Data_Wrap_Struct(cPixelArray, NULL, free, buf); 
+}
+
+// TODO: test
+static VALUE
+visual_unpackPixels(VALUE self, VALUE pixelarray, VALUE length)
+{
+  ggi_visual_t *vis;
+  void *buf;
+  int err, len, i;
+  ggi_color *cols, *col_elem;
+  VALUE arr, elem;
+
+  Data_Get_Struct(self, ggi_visual_t, vis);
+  Data_Get_Struct(pixelarray, void, buf);
+
+  len = NUM2INT(length);
+
+  if (len > *((int*)buf)) {
+    FAIL_GGI("ggiUnpackPixels: pixelarray is smaller than requested length");
+    return Qnil;
+  }
+
+  cols = ALLOC_N(ggi_color, len);
+  
+  err = ggiUnpackPixels(*vis, (void*)buf+sizeof(int), cols, len);
+  if (err < 0) {
+    free(cols);
+    FAIL_GGI("ggiUnpackPixels");
+    return Qnil;
+  }
+
+  // convert cols to Ruby array
+  arr = rb_ary_new2(len);
+  for (i=0; i<len; i++) {
+    elem = Data_Make_Struct(cColor, ggi_color, NULL, free, col_elem);
+    cols[i] = *col_elem;
+    rb_ary_store(arr, i, elem);
+  }
+
+  return arr;
+}
+
+// TODO: test
+static VALUE
+visual_putHLine(VALUE self, VALUE x, VALUE y, VALUE w, VALUE pixelarray)
+{
+  ggi_visual_t *vis;
+  void *buf;
+  int err;
+  int width;
+
+  Data_Get_Struct(self, ggi_visual_t, vis);
+  Data_Get_Struct(pixelarray, void, buf);
+
+  width = NUM2INT(w);
+
+  if (width > *((int*)buf)) {
+    FAIL_GGI("ggiPutHLine: size of pixelarray is smaller than width");
+    return Qnil;
+  }
+
+  err = ggiPutHLine(*vis, NUM2INT(x), NUM2INT(y), width, (void*)buf+sizeof(int));
+  VIS_TMPL_RETURN("ggiPutHLine");
+}
+
+// TODO: test
+static VALUE
+visual_putVLine(VALUE self, VALUE x, VALUE y, VALUE h, VALUE pixelarray)
+{
+  ggi_visual_t *vis;
+  void *buf;
+  int err;
+  int height;
+
+  Data_Get_Struct(self, ggi_visual_t, vis);
+  Data_Get_Struct(pixelarray, void, buf);
+
+  height = NUM2INT(h);
+
+  if (height > *((int*)buf)) {
+    FAIL_GGI("ggiPutVLine: size of pixelarray is smaller than width");
+    return Qnil;
+  }
+
+  err = ggiPutVLine(*vis, NUM2INT(x), NUM2INT(y), height, (void*)buf+sizeof(int));
+  VIS_TMPL_RETURN("ggiPutVLine");
+}
+
+// TODO: test
+static VALUE
+visual_putBox(VALUE self, VALUE x, VALUE y, VALUE w, VALUE h, VALUE pixelarray)
+{
+  ggi_visual_t *vis;
+  void *buf;
+  int err;
+  int width, height;
+
+  Data_Get_Struct(self, ggi_visual_t, vis);
+  Data_Get_Struct(pixelarray, void, buf);
+
+  width = NUM2INT(w);
+  height = NUM2INT(h);
+
+  if ((width*height) > *((int*)buf)) {
+    FAIL_GGI("ggiPutBox: size of pixelarray is smaller than width*height");
+    return Qnil;
+  }
+
+  err = ggiPutBox(*vis, NUM2INT(x), NUM2INT(y), width, height, (void*)buf+sizeof(int));
+  VIS_TMPL_RETURN("ggiPutBox");
+}
+
+
+
+
+// TODO: test
+static VALUE
+visual_getHLine(VALUE self, VALUE x, VALUE y, VALUE w)
+{
+  ggi_visual_t *vis;
+  void *buf;
+  const ggi_pixelformat *pixel_format;
+  int err;
+  int width;
+
+  Data_Get_Struct(self, ggi_visual_t, vis);
+
+  pixel_format = ggiGetPixelFormat(*vis);
+
+  width = NUM2INT(w);
+  buf = xmalloc(sizeof(int) + width*(pixel_format->size/8)); // sizeof(int) for storing the size 
+  *((int*)buf) = width; // store the size in the first sizeof(int) bytes
+
+  err = ggiGetHLine(*vis, NUM2INT(x), NUM2INT(y), width, (void*)buf+sizeof(int));
+  if (err < 0) {
+    free(buf);
+    FAIL_GGI("ggiGetHLine");
+    return Qnil;
+  }
+
+  return Data_Wrap_Struct(cPixelArray, NULL, free, buf); 
+}
+
+// TODO: test
+static VALUE
+visual_getVLine(VALUE self, VALUE x, VALUE y, VALUE h)
+{
+  ggi_visual_t *vis;
+  void *buf;
+  const ggi_pixelformat *pixel_format;
+  int err;
+  int height;
+
+  Data_Get_Struct(self, ggi_visual_t, vis);
+
+  pixel_format = ggiGetPixelFormat(*vis);
+
+  height = NUM2INT(h);
+  buf = xmalloc(sizeof(int) + height*(pixel_format->size/8)); // sizeof(int) for storing the size 
+  *((int*)buf) = height; // store the size in the first sizeof(int) bytes
+
+  err = ggiGetVLine(*vis, NUM2INT(x), NUM2INT(y), height, (void*)buf+sizeof(int));
+  if (err < 0) {
+    free(buf);
+    FAIL_GGI("ggiGetVLine");
+    return Qnil;
+  }
+
+  return Data_Wrap_Struct(cPixelArray, NULL, free, buf); 
+}
+
+// TODO: test
+static VALUE
+visual_getBox(VALUE self, VALUE x, VALUE y, VALUE w, VALUE h)
+{
+  ggi_visual_t *vis;
+  void *buf;
+  const ggi_pixelformat *pixel_format;
+  int err;
+  int width, height;
+
+  Data_Get_Struct(self, ggi_visual_t, vis);
+
+  pixel_format = ggiGetPixelFormat(*vis);
+
+  width = NUM2INT(w);
+  height = NUM2INT(h);
+  buf = xmalloc(sizeof(int) + width*height*(pixel_format->size/8)); // sizeof(int) for storing the size 
+  *((int*)buf) = width*height; // store the size in the first sizeof(int) bytes
+
+  err = ggiGetBox(*vis, NUM2INT(x), NUM2INT(y), width, height, (void*)buf+sizeof(int));
+  if (err < 0) {
+    free(buf);
+    FAIL_GGI("ggiGetBox");
+    return Qnil;
+  }
+
+  return Data_Wrap_Struct(cPixelArray, NULL, free, buf); 
+}
+
+
 static VALUE
 visual_setGCForeground(VALUE self, VALUE pixel)
 {
-  #{ VIS_TEMPLATE(:ggiSetGCForeground, "(ggi_pixel)NUM2ULONG(pixel)") }
+  #{ VIS_TEMPLATE(:ggiSetGCForeground, "(ggi_pixel)NUM2ULONG(pixel)", :ret) }
 }
 
 static VALUE
 visual_setGCBackground(VALUE self, VALUE pixel)
 {
-  #{ VIS_TEMPLATE(:ggiSetGCBackground, "(ggi_pixel)NUM2ULONG(pixel)") }
+  #{ VIS_TEMPLATE(:ggiSetGCBackground, "(ggi_pixel)NUM2ULONG(pixel)", :ret) }
 }
 
 static VALUE
@@ -289,7 +530,7 @@ visual_getGCBackground(VALUE self)
 static VALUE
 visual_setGCClipping(VALUE self, VALUE left, VALUE top, VALUE right, VALUE bottom)
 {
-  #{ VIS_TEMPLATE(:ggiSetGCClipping, "NUM2INT(left), NUM2INT(top), NUM2INT(right), NUM2INT(bottom)") }
+  #{ VIS_TEMPLATE(:ggiSetGCClipping, "NUM2INT(left), NUM2INT(top), NUM2INT(right), NUM2INT(bottom)", :ret) }
 }
 
 static VALUE
@@ -303,13 +544,13 @@ visual_getGCClipping(VALUE self)
 static VALUE
 visual_drawPixel(VALUE self, VALUE x, VALUE y)
 {
-  #{ VIS_TEMPLATE(:ggiDrawPixel, "NUM2INT(x), NUM2INT(y)") }
+  #{ VIS_TEMPLATE(:ggiDrawPixel, "NUM2INT(x), NUM2INT(y)", :ret) }
 }
 
 static VALUE
 visual_putPixel(VALUE self, VALUE x, VALUE y, VALUE pixel)
 {
-  #{ VIS_TEMPLATE(:ggiPutPixel, "NUM2INT(x), NUM2INT(y), (ggi_pixel)NUM2ULONG(pixel)") }
+  #{ VIS_TEMPLATE(:ggiPutPixel, "NUM2INT(x), NUM2INT(y), (ggi_pixel)NUM2ULONG(pixel)", :ret) }
 }
 
 static VALUE
@@ -323,27 +564,26 @@ visual_getPixel(VALUE self, VALUE x, VALUE y)
 static VALUE
 visual_drawHLine(VALUE self, VALUE x, VALUE y, VALUE w)
 {
-  #{ VIS_TEMPLATE(:ggiDrawHLine, "NUM2INT(x), NUM2INT(y), NUM2INT(w)") }
+  #{ VIS_TEMPLATE(:ggiDrawHLine, "NUM2INT(x), NUM2INT(y), NUM2INT(w)", :ret) }
 }
 
 static VALUE
 visual_drawVLine(VALUE self, VALUE x, VALUE y, VALUE h)
 {
-  #{ VIS_TEMPLATE(:ggiDrawVLine, "NUM2INT(x), NUM2INT(y), NUM2INT(h)") }
+  #{ VIS_TEMPLATE(:ggiDrawVLine, "NUM2INT(x), NUM2INT(y), NUM2INT(h)", :ret) }
 }
 
 static VALUE
 visual_drawLine(VALUE self, VALUE x, VALUE y, VALUE xe, VALUE ye)
 {
-  #{ VIS_TEMPLATE(:ggiDrawLine, "NUM2INT(x), NUM2INT(y), NUM2INT(xe), NUM2INT(ye)") }
+  #{ VIS_TEMPLATE(:ggiDrawLine, "NUM2INT(x), NUM2INT(y), NUM2INT(xe), NUM2INT(ye)", :ret) }
 }
 
 static VALUE
 visual_drawBox(VALUE self, VALUE x, VALUE y, VALUE w, VALUE h)
 {
-  #{ VIS_TEMPLATE(:ggiDrawBox, "NUM2INT(x), NUM2INT(y), NUM2INT(w), NUM2INT(h)") }
+  #{ VIS_TEMPLATE(:ggiDrawBox, "NUM2INT(x), NUM2INT(y), NUM2INT(w), NUM2INT(h)", :ret) }
 }
-
 
 
 /* =================================== My own drawing routines ================================= */
@@ -369,12 +609,111 @@ visual_drawRect(VALUE self, VALUE x1, VALUE y1, VALUE width, VALUE height)
     err |= ggiDrawVLine(*vis, x+w-1, y, h);
   }
 
-  if (err != 0) {
-    rb_raise(eGGI, "drawRect failed (return value: %d)", err);
+  VIS_TMPL_RETURN("drawRect");
+}
+
+extern int filledPolygonColor(ggi_visual_t dst, int * vx, int * vy, int n);
+
+static VALUE
+visual_filledPoly(VALUE self, VALUE vx, VALUE vy, VALUE n)
+{
+  int *vertex_x, *vertex_y;
+  int elems, i;
+  int err;
+  ggi_visual_t *vis;
+  Data_Get_Struct(self, ggi_visual_t, vis);
+
+  elems = NUM2INT(n);
+  vertex_x = ALLOC_N(int, elems); 
+  vertex_y = ALLOC_N(int, elems); 
+
+  for (i = 0; i < elems; i++) {
+    vertex_x[i] = NUM2INT(rb_ary_entry(vx, i));
+    vertex_y[i] = NUM2INT(rb_ary_entry(vy, i));
   }
 
+  err = filledPolygonColor(*vis, vertex_x, vertex_y, elems);
+
+  VIS_TMPL_RETURN("filledPoly");
+}
+
+
+typedef struct _TTF_Font TTF_Font;
+extern int TTF_Init( void );
+extern TTF_Font* TTF_OpenFontIndex( const char *file, int ptsize, long index );
+extern void TTF_CloseFont( TTF_Font* font );
+extern ggi_visual_t TTF_RenderText_Solid(TTF_Font *font, const char *text, ggi_color *fg);
+
+static ttf_already_initialized = 0;
+
+static VALUE
+visual_renderText(VALUE self, VALUE font_name, VALUE font_size, VALUE xpos, VALUE ypos, VALUE text)
+{
+  TTF_Font *font;
+  ggi_visual_t src, *vis;
+  ggi_color col, pixcol;
+  ggi_mode mode;
+  const ggi_directbuffer *dbuf;
+  int x, y, xa, ya;
+  ggi_pixel pixel;
+
+  Data_Get_Struct(self, ggi_visual_t, vis);
+
+  xa = NUM2INT(xpos); ya = NUM2INT(ypos);
+
+  ggiGetGCForeground(*vis, &pixel);
+  ggiUnmapPixel(*vis, pixel, &col);
+
+  if (ttf_already_initialized == 0) {
+    TTF_Init();
+    ttf_already_initialized = 1;
+  }
+
+  // TODO: very slow to open the font for every renderText call
+  font = TTF_OpenFont(STR2CSTR(font_name), NUM2INT(font_size));
+
+  if (font == NULL) {
+    rb_raise(eGGI, "renderText: couldn't open font");
+    return Qnil;
+  }
+
+  src = TTF_RenderText_Solid(font, STR2CSTR(text), &col);
+  ggiGetMode(src, &mode);
+
+  // copy text onto destination visual
+  // with palette color 0 beeing transparent 
+  //ggiCrossBlit(src, 0, 0, mode.visible.x, mode.visible.y, *vis, 0, 0);
+  
+  // TODO: does the blit extension help to avoid the loops below?
+  dbuf = ggiDBGetBuffer(src, 0);
+  if(!(dbuf->type & GGI_DB_SIMPLE_PLB))
+  {
+    rb_raise(eGGI, "renderText/ggiDBGetBuffer: pixel linear buffer required");
+  }
+  if(dbuf->read == NULL) {
+    rb_raise(eGGI, "renderText: visual does not have read buffer");
+  } 
+  
+  for (x=0; x < mode.visible.x; x++) 
+  {
+    for (y=0; y < mode.visible.y; y++) 
+    {
+      if (((unsigned char*)dbuf->read)[x+dbuf->buffer.plb.stride*y] == 0)
+      {
+        continue;
+      }
+      
+      ggiGetPixel(src, x, y, &pixel);
+      ggiUnmapPixel(src, pixel, &pixcol);
+      ggiPutPixel(*vis, x+xa, y+ya, ggiMapColor(*vis, &pixcol));
+    }
+  }
+
+  ggiClose(src);
+  TTF_CloseFont(font);
   return Qnil;
 }
+
 
 /* ============================================================================================= */
 
@@ -382,19 +721,27 @@ visual_drawRect(VALUE self, VALUE x1, VALUE y1, VALUE width, VALUE height)
 static VALUE
 visual_fillscreen(VALUE self)
 {
-  #{ VIS_TEMPLATE(:ggiFillscreen) }
+  #{ VIS_TEMPLATE(:ggiFillscreen, nil, :ret) }
 }
 
 static VALUE
 visual_copyBox(VALUE self, VALUE x, VALUE y, VALUE w, VALUE h, VALUE nx, VALUE ny)
 {
-  #{ VIS_TEMPLATE(:ggiCopyBox, "NUM2INT(x), NUM2INT(y), NUM2INT(w), NUM2INT(h), NUM2INT(nx), NUM2INT(ny)") }
+  #{ VIS_TEMPLATE(:ggiCopyBox, "NUM2INT(x), NUM2INT(y), NUM2INT(w), NUM2INT(h), NUM2INT(nx), NUM2INT(ny)", :ret) }
+}
+
+static VALUE
+visual_crossBlit(VALUE self, VALUE sx, VALUE sy, VALUE w, VALUE h, VALUE dst, VALUE dx, VALUE dy)
+{
+  ggi_visual_t *dst_vis;
+  Data_Get_Struct(dst, ggi_visual_t, dst_vis);
+  #{ VIS_TEMPLATE(:ggiCrossBlit, "NUM2INT(sx), NUM2INT(sy), NUM2INT(w), NUM2INT(h), *dst_vis, NUM2INT(dx), NUM2INT(dy)", :ret) }
 }
 
 static VALUE
 visual_setOrigin(VALUE self, VALUE x, VALUE y)
 {
-  #{ VIS_TEMPLATE(:ggiSetOrigin, "NUM2INT(x), NUM2INT(y)") }
+  #{ VIS_TEMPLATE(:ggiSetOrigin, "NUM2INT(x), NUM2INT(y)", :ret) }
 }
 
 static VALUE
@@ -410,13 +757,13 @@ visual_getOrigin(VALUE self)
 static VALUE
 visual_putc(VALUE self, VALUE x, VALUE y, VALUE c)
 {
-  #{ VIS_TEMPLATE(:ggiPutc, "NUM2INT(x), NUM2INT(y), NUM2CHR(c)") }
+  #{ VIS_TEMPLATE(:ggiPutc, "NUM2INT(x), NUM2INT(y), NUM2CHR(c)", :ret) }
 }
 
 static VALUE
 visual_puts(VALUE self, VALUE x, VALUE y, VALUE str)
 {
-  #{ VIS_TEMPLATE(:ggiPuts, "NUM2INT(x), NUM2INT(y), STR2CSTR(str)") }
+  #{ VIS_TEMPLATE(:ggiPuts, "NUM2INT(x), NUM2INT(y), STR2CSTR(str)", :ret) }
 }
 
 static VALUE
@@ -427,6 +774,44 @@ visual_getCharSize(VALUE self)
   #{ VIS_TEMPLATE(:ggiGetCharSize, "&w, &h", :noret) }
 
   return rb_ary_new3(2, INT2NUM(w), INT2NUM(h));
+}
+
+static VALUE
+visual_flush(VALUE self)
+{
+  #{ VIS_TEMPLATE(:ggiFlush, nil, :ret) }
+}
+
+static VALUE
+visual_flushRegion(VALUE self, VALUE x, VALUE y, VALUE w, VALUE h)
+{
+  #{ VIS_TEMPLATE(:ggiFlushRegion, "NUM2INT(x), NUM2INT(y), NUM2INT(w), NUM2INT(h)", :ret) }
+}
+
+static VALUE
+visual_setFlags(VALUE self, VALUE flags)
+{
+  #{ VIS_TEMPLATE(:ggiSetFlags, "NUM2INT(flags)", :ret) }
+}
+
+static VALUE
+visual_addFlags(VALUE self, VALUE flags)
+{
+  #{ VIS_TEMPLATE(:ggiAddFlags, "NUM2INT(flags)", :ret) }
+}
+
+static VALUE
+visual_removeFlags(VALUE self, VALUE flags)
+{
+  #{ VIS_TEMPLATE(:ggiAddFlags, "NUM2INT(flags)", :ret) }
+}
+
+static VALUE
+visual_getFlags(VALUE self)
+{
+  ggi_visual_t *vis;
+  Data_Get_Struct(self, ggi_visual_t, vis);
+  return INT2NUM(ggiGetFlags(*vis));
 }
 
 
@@ -486,7 +871,7 @@ visual_eventPoll(VALUE self, VALUE eventMask, VALUE timeout)
 
   em = ggiEventPoll(*vis, NUM2INT(eventMask), tv_ptr);
 
-  if (em < 0)
+  if ((long)em < 0)
   {
     rb_raise(eGGI, "ggiEventPoll failed (return value: %d)", em);
     return Qnil;
@@ -539,8 +924,10 @@ event___create(gii_event *ev)
       break;
 
     case evPtrButtonPress:
+      return Data_Wrap_Struct(cEventPtrButtonPress, NULL, free, ev);
+      break;
     case evPtrButtonRelease:
-      return Data_Wrap_Struct(cEventPtrButton, NULL, free, ev);
+      return Data_Wrap_Struct(cEventPtrButtonRelease, NULL, free, ev);
       break;
 
     case evValRelative:
@@ -785,6 +1172,7 @@ void Init_ggi()
   mGGI = rb_define_module("GGI");
   cVisual = rb_define_class_under(mGGI, "Visual", rb_cObject);
   cColor = rb_define_class_under(mGGI, "Color", rb_cObject);
+  cPixelArray = rb_define_class_under(mGGI, "PixelArray", rb_cObject);
 
   cEvent = rb_define_class_under(mGGI, "Event", rb_cObject);
   cEventCommand = rb_define_class_under(cEvent, "Command", cEvent);
@@ -793,6 +1181,8 @@ void Init_ggi()
   cEventKey = rb_define_class_under(cEvent, "Key", cEvent);
   cEventPtrMove = rb_define_class_under(cEvent, "PtrMove", cEvent);
   cEventPtrButton = rb_define_class_under(cEvent, "PtrButton", cEvent);
+  cEventPtrButtonPress = rb_define_class_under(cEvent, "PtrButtonPress", cEventPtrButton);
+  cEventPtrButtonRelease = rb_define_class_under(cEvent, "PtrButtonRelease", cEventPtrButton);
 
   eGGI = rb_define_class_under(mGGI, "Error", rb_eRuntimeError);
 
@@ -801,8 +1191,13 @@ void Init_ggi()
     %w(GT_TEXT GT_TRUECOLOR GT_GREYSCALE GT_PALETTE GT_STATIC_PALETTE GT_SUBSAMPLE_YUV GT_SUBSAMPLE_U_YCRBR GT_SUBSAMPLE_S_YCRBR GT_NIL
        GT_SUB_REVERSE_ENDIAN GT_SUB_HIGHBIT_RIGHT GT_SUB_PACKED_GETPUT
        GT_TEXT16 GT_TEXT32 GT_1BIT GT_2BIT GT_4BIT GT_8BIT GT_15BIT GT_16BIT GT_24BIT GT_32BIT GT_AUTO GT_INVALID
-       GGI_AUTO).map {|c| "  rb_define_const(mGGI, \"#{ c }\", INT2NUM(#{ c }));" }.join("\n")
+       GGI_AUTO
+       GGIFLAG_ASYNC
+       ).map {|c| "  rb_define_const(mGGI, \"#{ c }\", INT2NUM(#{ c }));" }.join("\n")
 }
+#ifdef GGIFLAG_TIDYBUF
+  rb_define_const(mGGI, "GGIFLAG_TIDYBUF", INT2NUM(GGIFLAG_TIDYBUF));
+#endif
 
   // define event constants
 #{
@@ -854,8 +1249,12 @@ void Init_ggi()
       setGCClipping/4 getGCClipping/0
       drawPixel/2 putPixel/3 getPixel/2
       drawHLine/3 drawVLine/3 drawLine/4
-      drawBox/4 fillscreen/0 copyBox/6 drawRect/4
+      drawBox/4 fillscreen/0 copyBox/6 crossBlit/7 drawRect/4 filledPoly/3 renderText/5
       setOrigin/2 getOrigin/0
+      flush/0 flushRegion/4
+      setFlags/1 addFlags/1 removeFlags/1 getFlags/0
+      packColors/2 unpackPixels/2
+      putHLine/4 putVLine/4 putBox/5 getHLine/3 getVLine/3 getBox/4
       putc/3 puts/3 getCharSize/0
       getc/0 kbhit/0
       eventPoll/2 eventsQueued/1 eventRead/1

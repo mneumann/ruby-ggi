@@ -1,4 +1,10 @@
 = Todo
+* no return after rb_raise
+* create package-description for FreeBSD
+* all methods that return a PixelBuffer should take an already existing PixelBuffer as an optional argument
+* packColors and unpackPixels needs testing (as well as all other methods operating on PixelArrays)
+* GGI::GGI_AUTO or GGI::AUTO or both? (same applies to GGIFLAG_XXX ..)
+* wrap graphtype and ggi_mode
 * add missing functions
 * implementGGI extensions (Overlay, Blitting)
 * implement text routines for TTF fonts (ft2)

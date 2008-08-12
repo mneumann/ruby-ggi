@@ -10,14 +10,14 @@ class ButtonMorph
     @state = :up
   end
 
-  def drawButton(visual, x, y, w, h, border_color, fill_color, highlight_color, shadow_color)
+  def drawButton(visual, x, y, w, h, border_color, fill_color, hilite_color, shadow_color)
     visual.setForegroundColor border_color
     visual.drawRect x, y, w, h
 
     visual.setForegroundColor fill_color
     visual.drawBox x+1, y+1, w-2, h-2
 
-    visual.setForegroundColor highlight_color
+    visual.setForegroundColor hilite_color
     visual.drawHLine x+1, y+1, w-2
     visual.drawVLine x+1, y+1, h-2
 
@@ -46,14 +46,14 @@ class ButtonMorph
 
     border_color = visual.rgb 0.0, 0.0, 0.0
     fill_color = visual.rgb 0.8, 0.8, 0.8
-    highlight_color = visual.rgb 0.9, 0.9, 0.9
+    hilite_color = visual.rgb 0.9, 0.9, 0.9
     shadow_color = visual.rgb 0.5, 0.5, 0.5
 
     case @state
     when :up
-      drawButton(visual, @x, @y, @w, @h, border_color, fill_color, highlight_color, shadow_color)
+      drawButton(visual, @x, @y, @w, @h, border_color, fill_color, hilite_color, shadow_color)
     when :down
-      drawButton(visual, @x, @y, @w, @h, border_color, fill_color, shadow_color, highlight_color)
+      drawButton(visual, @x, @y, @w, @h, border_color, fill_color, shadow_color, hilite_color)
     end
   end
 end
