@@ -1,0 +1,864 @@
+#!/usr/bin/env ruby
+
+class Array
+  def defMethods(pref)
+    map{|c| 
+      meth, argc = c.split("/")
+      "  rb_define_method(c#{ pref[0,1].upcase + pref[1..-1] }, \"#{ meth }\", #{ pref }_#{ meth }, #{ argc });"}.join("\n")
+  end
+end
+
+
+# mode == :default (return nil, or integer error number > 0)
+def VIS_TEMPLATE(name, args=nil, mode=:default)
+  args = if args.nil?
+    []
+  elsif args.is_a? Array
+    args
+  else
+    [args]
+  end
+
+  args.unshift "*vis"
+  # TODO: waring mode?
+%{ggi_visual_t *vis;
+  int err;
+
+  Data_Get_Struct(self, ggi_visual_t, vis);
+
+  if ((err = #{ name }(#{ args.join(", ") })) != 0)
+  {
+    if (err < 0)
+    {
+      rb_raise(eGGI, "#{ name } failed (return value: %d)", err);
+      return Qnil;
+    }
+    else
+    {
+      #{ if mode == :default then "return INT2NUM(err);" else "" end }
+    }
+  }
+  #{ if mode == :default then "return Qnil;" else "" end }
+}
+end
+
+
+open("ggi.c", "w+") {|f| 
+  f.puts "// This file was automatically generated from ggi.c.in!"
+  f.puts
+  f.puts eval("%{ #{ DATA.read } }")
+}
+
+__END__
+/*
+ * TODO:
+ *   visual___free: call to ggiClose failes if ggiExit is called before.
+ *   
+ *   putHLine, getHLine, packColors, unpackPixels, putVLine, getVLine, 
+ *   ggiPutBox, ggiGetBox
+ *
+ */
+
+
+#include <ggi/ggi.h>
+#include "ruby.h"
+
+static VALUE mGGI;
+static VALUE cVisual;
+static VALUE cColor;
+static VALUE cEvent;
+static VALUE cEventCommand;  
+static VALUE cEventExpose;
+static VALUE cEventValuator;
+static VALUE cEventKey;
+static VALUE cEventPtrMove;
+static VALUE cEventPtrButton;
+static VALUE eGGI;
+
+
+static VALUE
+ggi_init(VALUE self)
+{
+  int err;
+
+  if ((err = ggiInit()) != 0)
+  {
+    rb_raise(eGGI, "ggiInit failed (return value: %d)", err);
+  }
+
+  return Qnil;
+}
+
+static VALUE
+ggi_exit(VALUE self)
+{
+  int err;
+
+  err = ggiExit();
+
+  if (err != 0)
+  {
+    if (err > 0)
+    {
+      return INT2NUM(err);
+    }
+    else if (err < 0)
+    {
+      rb_raise(eGGI, "ggiExit failed (return value: %d)", err);
+    }
+  }
+
+  return Qnil;
+}
+
+static VALUE
+ggi__gt_construct(VALUE self, VALUE depth, VALUE scheme, VALUE size)
+{
+  return INT2NUM(GT_CONSTRUCT(NUM2INT(depth), NUM2INT(scheme), NUM2INT(size)));
+}
+
+static void visual___free(void *ptr) 
+{
+  int err;
+  ggi_visual_t *vis = (ggi_visual_t*) ptr;
+
+
+  if (*vis != NULL)
+  {
+    if ((err = ggiClose(*vis)) != 0)
+    {
+      rb_warn("ggi: ggiClose during GC free failed (return value: %d)", err);
+    }
+  }
+  free(ptr);
+}
+
+
+static VALUE
+visual__open(VALUE self, VALUE display)
+{
+  char *c_display;
+  ggi_visual_t *vis;
+  VALUE res;
+
+  switch (TYPE(display))
+  {
+    case T_NIL:
+      c_display = NULL;
+      break;
+    case T_STRING:
+      c_display = STR2CSTR(display);
+      break;
+    default:
+      rb_raise(rb_eTypeError, "invalid type: string or nil expected");
+      return Qnil;
+  }
+
+  res = Data_Make_Struct(cVisual, ggi_visual_t, NULL, visual___free, vis);
+  *vis = ggiOpen(c_display);
+
+  if (NULL == *vis)
+  {
+    rb_raise(eGGI, "ggiOpen failed");
+    return Qnil;
+  }
+
+  return res;
+}
+
+static VALUE
+visual_close(VALUE self)
+{
+  ggi_visual_t *vis;
+  int err;
+  
+  Data_Get_Struct(self, ggi_visual_t, vis);
+
+  if ((err = ggiClose(*vis)) != 0)
+  {
+    rb_raise(eGGI, "ggiClose failed (return value: %d)", err);
+  }
+
+  *vis = NULL; // mark as closed
+
+  return Qnil;
+}
+
+static VALUE
+visual_setSimpleMode(VALUE self, VALUE xsize, VALUE ysize, VALUE frames, VALUE type)
+{
+  #{ VIS_TEMPLATE(:ggiSetSimpleMode, "NUM2INT(xsize), NUM2INT(ysize), NUM2INT(frames), NUM2UINT(type)") }
+}
+
+static VALUE
+visual_setDisplayFrame(VALUE self, VALUE frameno)
+{
+  #{ VIS_TEMPLATE(:ggiSetDisplayFrame, "NUM2INT(frameno)") }
+}
+
+static VALUE
+visual_setWriteFrame(VALUE self, VALUE frameno)
+{
+  #{ VIS_TEMPLATE(:ggiSetWriteFrame, "NUM2INT(frameno)") }
+}
+
+static VALUE
+visual_setReadFrame(VALUE self, VALUE frameno)
+{
+  #{ VIS_TEMPLATE(:ggiSetReadFrame, "NUM2INT(frameno)") }
+}
+   
+static VALUE
+visual_getDisplayFrame(VALUE self)
+{
+  ggi_visual_t *vis;
+  Data_Get_Struct(self, ggi_visual_t, vis);
+  return INT2NUM(ggiGetDisplayFrame(*vis));
+}
+
+static VALUE
+visual_getWriteFrame(VALUE self)
+{
+  ggi_visual_t *vis;
+  Data_Get_Struct(self, ggi_visual_t, vis);
+  return INT2NUM(ggiGetWriteFrame(*vis));
+}
+
+static VALUE
+visual_getReadFrame(VALUE self)
+{
+  ggi_visual_t *vis;
+  Data_Get_Struct(self, ggi_visual_t, vis);
+  return INT2NUM(ggiGetReadFrame(*vis));
+}
+
+// pixel values are represented as Bignums (or Fixnums)
+static VALUE
+visual_mapColor(VALUE self, VALUE color)
+{
+  ggi_visual_t *vis;
+  ggi_color *col;
+  ggi_pixel pixel;
+
+  Data_Get_Struct(color, ggi_color, col); // TODO: check if Color object
+  Data_Get_Struct(self, ggi_visual_t, vis);
+
+  pixel = ggiMapColor(*vis, col);
+  return ULONG2NUM((unsigned long)pixel);
+}
+
+static VALUE
+visual_unmapPixel(VALUE self, VALUE pixel)
+{
+  ggi_color *col;
+  VALUE res = Data_Make_Struct(cColor, ggi_color, NULL, free, col);
+
+  #{ VIS_TEMPLATE(:ggiUnmapPixel, "(ggi_pixel)NUM2ULONG(pixel), col", :noret) }
+
+  return res;
+}
+
+static VALUE
+visual_setGCForeground(VALUE self, VALUE pixel)
+{
+  #{ VIS_TEMPLATE(:ggiSetGCForeground, "(ggi_pixel)NUM2ULONG(pixel)") }
+}
+
+static VALUE
+visual_setGCBackground(VALUE self, VALUE pixel)
+{
+  #{ VIS_TEMPLATE(:ggiSetGCBackground, "(ggi_pixel)NUM2ULONG(pixel)") }
+}
+
+static VALUE
+visual_getGCForeground(VALUE self)
+{
+  ggi_pixel pixel;
+  #{ VIS_TEMPLATE(:ggiGetGCForeground, "&pixel", :noret) }
+  return ULONG2NUM((unsigned long) pixel);
+}
+
+static VALUE
+visual_getGCBackground(VALUE self)
+{
+  ggi_pixel pixel;
+  #{ VIS_TEMPLATE(:ggiGetGCBackground, "&pixel", :noret) }
+  return ULONG2NUM((unsigned long) pixel);
+}
+
+static VALUE
+visual_setGCClipping(VALUE self, VALUE left, VALUE top, VALUE right, VALUE bottom)
+{
+  #{ VIS_TEMPLATE(:ggiSetGCClipping, "NUM2INT(left), NUM2INT(top), NUM2INT(right), NUM2INT(bottom)") }
+}
+
+static VALUE
+visual_getGCClipping(VALUE self)
+{
+  int left, top, right, bottom;
+  #{ VIS_TEMPLATE(:ggiGetGCClipping, "&left, &top, &right, &bottom", :noret) }
+  return rb_ary_new3(4, INT2NUM(left), INT2NUM(top), INT2NUM(right), INT2NUM(bottom));
+}
+
+static VALUE
+visual_drawPixel(VALUE self, VALUE x, VALUE y)
+{
+  #{ VIS_TEMPLATE(:ggiDrawPixel, "NUM2INT(x), NUM2INT(y)") }
+}
+
+static VALUE
+visual_putPixel(VALUE self, VALUE x, VALUE y, VALUE pixel)
+{
+  #{ VIS_TEMPLATE(:ggiPutPixel, "NUM2INT(x), NUM2INT(y), (ggi_pixel)NUM2ULONG(pixel)") }
+}
+
+static VALUE
+visual_getPixel(VALUE self, VALUE x, VALUE y)
+{
+  ggi_pixel pixel;
+  #{ VIS_TEMPLATE(:ggiGetPixel, "NUM2INT(x), NUM2INT(y), &pixel", :noret) }
+  return ULONG2NUM((unsigned long) pixel);
+}
+
+static VALUE
+visual_drawHLine(VALUE self, VALUE x, VALUE y, VALUE w)
+{
+  #{ VIS_TEMPLATE(:ggiDrawHLine, "NUM2INT(x), NUM2INT(y), NUM2INT(w)") }
+}
+
+static VALUE
+visual_drawVLine(VALUE self, VALUE x, VALUE y, VALUE h)
+{
+  #{ VIS_TEMPLATE(:ggiDrawVLine, "NUM2INT(x), NUM2INT(y), NUM2INT(h)") }
+}
+
+static VALUE
+visual_drawLine(VALUE self, VALUE x, VALUE y, VALUE xe, VALUE ye)
+{
+  #{ VIS_TEMPLATE(:ggiDrawLine, "NUM2INT(x), NUM2INT(y), NUM2INT(xe), NUM2INT(ye)") }
+}
+
+static VALUE
+visual_drawBox(VALUE self, VALUE x, VALUE y, VALUE w, VALUE h)
+{
+  #{ VIS_TEMPLATE(:ggiDrawBox, "NUM2INT(x), NUM2INT(y), NUM2INT(w), NUM2INT(h)") }
+}
+
+
+
+/* =================================== My own drawing routines ================================= */
+
+static VALUE
+visual_drawRect(VALUE self, VALUE x1, VALUE y1, VALUE width, VALUE height)
+{
+  int x, y, w, h;
+  int err = 0;
+  ggi_visual_t *vis;
+  Data_Get_Struct(self, ggi_visual_t, vis);
+
+  x = NUM2INT(x1);
+  y = NUM2INT(y1);
+  w = NUM2INT(width);
+  h = NUM2INT(height);
+
+  if (w > 0 && h > 0)
+  {
+    err = ggiDrawHLine(*vis, x, y, w);
+    err |= ggiDrawHLine(*vis, x, y+h-1, w);
+    err |= ggiDrawVLine(*vis, x, y, h);
+    err |= ggiDrawVLine(*vis, x+w-1, y, h);
+  }
+
+  if (err != 0) {
+    rb_raise(eGGI, "drawRect failed (return value: %d)", err);
+  }
+
+  return Qnil;
+}
+
+/* ============================================================================================= */
+
+
+static VALUE
+visual_fillscreen(VALUE self)
+{
+  #{ VIS_TEMPLATE(:ggiFillscreen) }
+}
+
+static VALUE
+visual_copyBox(VALUE self, VALUE x, VALUE y, VALUE w, VALUE h, VALUE nx, VALUE ny)
+{
+  #{ VIS_TEMPLATE(:ggiCopyBox, "NUM2INT(x), NUM2INT(y), NUM2INT(w), NUM2INT(h), NUM2INT(nx), NUM2INT(ny)") }
+}
+
+static VALUE
+visual_setOrigin(VALUE self, VALUE x, VALUE y)
+{
+  #{ VIS_TEMPLATE(:ggiSetOrigin, "NUM2INT(x), NUM2INT(y)") }
+}
+
+static VALUE
+visual_getOrigin(VALUE self)
+{
+  int x, y;
+
+  #{ VIS_TEMPLATE(:ggiGetOrigin, "&x, &y", :noret) }
+
+  return rb_ary_new3(2, INT2NUM(x), INT2NUM(y));
+}
+
+static VALUE
+visual_putc(VALUE self, VALUE x, VALUE y, VALUE c)
+{
+  #{ VIS_TEMPLATE(:ggiPutc, "NUM2INT(x), NUM2INT(y), NUM2CHR(c)") }
+}
+
+static VALUE
+visual_puts(VALUE self, VALUE x, VALUE y, VALUE str)
+{
+  #{ VIS_TEMPLATE(:ggiPuts, "NUM2INT(x), NUM2INT(y), STR2CSTR(str)") }
+}
+
+static VALUE
+visual_getCharSize(VALUE self)
+{
+  int w, h;
+
+  #{ VIS_TEMPLATE(:ggiGetCharSize, "&w, &h", :noret) }
+
+  return rb_ary_new3(2, INT2NUM(w), INT2NUM(h));
+}
+
+
+/* ======================================== Events ===================================== */
+
+static VALUE
+visual_getc(VALUE self)
+{
+  ggi_visual_t *vis;
+  
+  Data_Get_Struct(self, ggi_visual_t, vis);
+  return INT2NUM(ggiGetc(*vis));
+}
+
+static VALUE
+visual_kbhit(VALUE self)
+{
+  ggi_visual_t *vis;
+  
+  Data_Get_Struct(self, ggi_visual_t, vis);
+  return ( (ggiKbhit(*vis) == 0) ? Qfalse : Qtrue ); 
+}
+
+static VALUE
+visual_eventPoll(VALUE self, VALUE eventMask, VALUE timeout)
+{
+  ggi_visual_t *vis;
+  gii_event_mask em;
+  struct timeval tv;
+  struct timeval *tv_ptr = &tv;
+
+  Data_Get_Struct(self, ggi_visual_t, vis);
+
+  switch (TYPE(timeout))
+  {
+    case T_NIL:
+      tv_ptr = NULL;
+      break;
+
+    case T_FIXNUM:
+      tv.tv_sec = FIX2INT(timeout);
+      tv.tv_usec = 0;
+      break;
+
+    default:
+      if (rb_class_of(timeout) == rb_cTime)
+      {
+        tv.tv_sec = NUM2LONG(rb_funcall(timeout, rb_intern("tv_sec"), 0));
+        tv.tv_usec = NUM2LONG(rb_funcall(timeout, rb_intern("tv_usec"), 0));
+      }
+      else
+      {
+        rb_raise(rb_eArgError, "nil, Fixnum or Time required");
+        return Qnil;
+      }
+  }
+
+  em = ggiEventPoll(*vis, NUM2INT(eventMask), tv_ptr);
+
+  if (em < 0)
+  {
+    rb_raise(eGGI, "ggiEventPoll failed (return value: %d)", em);
+    return Qnil;
+  }
+
+  return LONG2NUM(em);
+}
+
+static VALUE
+visual_eventsQueued(VALUE self, VALUE eventMask)
+{
+  ggi_visual_t *vis;
+
+  Data_Get_Struct(self, ggi_visual_t, vis);
+
+  return INT2NUM(ggiEventsQueued(*vis, NUM2INT(eventMask)));
+}
+
+
+/* ======================================== Event ===================================== */
+
+static VALUE
+event___create(gii_event *ev)
+{
+  switch (ev->any.type)
+  {
+    case evNothing:
+      rb_raise(eGGI, "event is not valid");
+      return Qnil;
+      break;
+
+    case evCommand:
+    case evInformation:
+      return Data_Wrap_Struct(cEventCommand, NULL, free, ev);
+      break;
+
+    case evExpose:
+      return Data_Wrap_Struct(cEventExpose, NULL, free, ev);
+      break;
+
+    case evKeyPress:
+    case evKeyRelease:
+    case evKeyRepeat:
+      return Data_Wrap_Struct(cEventKey, NULL, free, ev);
+      break;
+
+    case evPtrRelative:
+    case evPtrAbsolute:
+      return Data_Wrap_Struct(cEventPtrMove, NULL, free, ev);
+      break;
+
+    case evPtrButtonPress:
+    case evPtrButtonRelease:
+      return Data_Wrap_Struct(cEventPtrButton, NULL, free, ev);
+      break;
+
+    case evValRelative:
+    case evValAbsolute:
+      return Data_Wrap_Struct(cEventValuator, NULL, free, ev);
+      break;
+
+    default: 
+      rb_raise(eGGI, "invalid/unknown event type");
+      return Qnil;
+  }
+}
+
+static VALUE
+event_size(VALUE self)
+{
+  gii_event *ev;
+  Data_Get_Struct(self, gii_event, ev);
+  return INT2FIX(ev->any.size);
+}
+
+static VALUE
+event_type(VALUE self)
+{
+  gii_event *ev;
+  Data_Get_Struct(self, gii_event, ev);
+  return INT2FIX(ev->any.type);
+}
+
+static VALUE
+event_error(VALUE self)
+{
+  gii_event *ev;
+  Data_Get_Struct(self, gii_event, ev);
+  return INT2FIX(ev->any.error);
+}
+
+static VALUE
+event_origin(VALUE self)
+{
+  gii_event *ev;
+  Data_Get_Struct(self, gii_event, ev);
+  return ULONG2NUM(ev->any.origin);
+}
+
+static VALUE
+event_target(VALUE self)
+{
+  gii_event *ev;
+  Data_Get_Struct(self, gii_event, ev);
+  return ULONG2NUM(ev->any.target);
+}
+
+static VALUE
+event_time(VALUE self)
+{
+  gii_event *ev;
+  Data_Get_Struct(self, gii_event, ev);
+  return rb_funcall(rb_cTime, rb_intern("at"), 2, ULONG2NUM(ev->any.time.tv_sec), ULONG2NUM(ev->any.time.tv_usec)); 
+}
+
+static VALUE
+eventCommand_code(VALUE self)
+{
+  gii_event *ev;
+  Data_Get_Struct(self, gii_event, ev);
+  return ULONG2NUM(ev->cmd.code);
+}
+
+static VALUE
+eventCommand_data(VALUE self)
+{
+  gii_event *ev;
+  Data_Get_Struct(self, gii_event, ev);
+  return rb_str_new((char*)ev->cmd.data, GII_CMD_DATA_MAX); // TODO: use size
+}
+
+#{ %w(x y w h).map {|c|
+%{
+static VALUE
+eventExpose_#{c}(VALUE self)
+{
+  gii_event *ev;
+  Data_Get_Struct(self, gii_event, ev);
+  return ULONG2NUM(ev->expose.#{c}); 
+}
+} }.to_s }
+
+static VALUE
+eventValuator_first(VALUE self)
+{
+  gii_event *ev;
+  Data_Get_Struct(self, gii_event, ev);
+  return ULONG2NUM(ev->val.first);
+}
+
+static VALUE
+eventValuator_count(VALUE self)
+{
+  gii_event *ev;
+  Data_Get_Struct(self, gii_event, ev);
+  return ULONG2NUM(ev->val.count);
+}
+
+static VALUE
+eventValuator_value(VALUE self, VALUE inx)
+{
+  gii_event *ev;
+  Data_Get_Struct(self, gii_event, ev);
+
+  if (TYPE(inx) != T_FIXNUM || FIX2INT(inx) >= 32 || FIX2INT(inx) < 0)
+  {
+    rb_raise(rb_eArgError, "Fixnum required (in the range 0..31)");
+  }
+
+  return LONG2NUM(ev->val.value[FIX2INT(inx)]);
+}
+
+#{ %w(modifiers sym label button).map {|c|
+%{
+static VALUE
+eventKey_#{c}(VALUE self)
+{
+  gii_event *ev;
+  Data_Get_Struct(self, gii_event, ev);
+  return ULONG2NUM(ev->key.#{c});
+}
+} } }
+
+#{ %w(x y z wheel).map {|c|
+%{
+static VALUE
+eventPtrMove_#{c}(VALUE self)
+{
+  gii_event *ev;
+  Data_Get_Struct(self, gii_event, ev);
+  return ULONG2NUM(ev->pmove.#{c});
+}
+} } }
+
+static VALUE
+eventPtrButton_button(VALUE self)
+{
+  gii_event *ev;
+  Data_Get_Struct(self, gii_event, ev);
+  return ULONG2NUM(ev->pbutton.button);
+}
+
+/* ==================================================================================== */
+
+// returns instance of class Event (or one of it's subclasses)
+static VALUE
+visual_eventRead(VALUE self, VALUE eventMask)
+{
+  ggi_visual_t *vis;
+  int evSize;
+  gii_event *ev;
+
+  Data_Get_Struct(self, ggi_visual_t, vis);
+
+  ev = ALLOC(gii_event);
+  evSize = ggiEventRead(*vis, ev, NUM2INT(eventMask));
+
+  if (0 == evSize)
+  {
+    rb_raise(eGGI, "ggiEventRead failed");
+    return Qnil;
+  }
+
+  return event___create(ev);  
+}
+
+
+
+/* ======================================== Color ===================================== */
+
+static VALUE
+color__new(VALUE self, VALUE red, VALUE green, VALUE blue, VALUE alpha)
+{
+  ggi_color *col;
+  unsigned int r, g, b, a;
+  VALUE res;
+
+  r = NUM2INT(red);
+  g = NUM2INT(green);
+  b = NUM2INT(blue);
+  a = NUM2INT(alpha);
+
+  if (r > 0xFFFF || g > 0xFFFF || b > 0xFFFF || a > 0xFFFF)
+  {
+    rb_raise(rb_eArgError, "Integer too large: r, g, b, a values must be below 0xFFFF");
+    return Qnil;
+  }
+
+  res = Data_Make_Struct(cColor, ggi_color, NULL, free, col);
+
+  col->r = r;
+  col->g = g;
+  col->b = b;
+  col->a = a;
+
+  return res;
+}
+
+
+static VALUE
+color_r(VALUE self)
+{
+  ggi_color *col;
+  Data_Get_Struct(self, ggi_color, col);
+  return INT2FIX(col->r);
+}
+
+static VALUE
+color_g(VALUE self)
+{
+  ggi_color *col;
+  Data_Get_Struct(self, ggi_color, col);
+  return INT2FIX(col->g);
+}
+
+static VALUE
+color_b(VALUE self)
+{
+  ggi_color *col;
+  Data_Get_Struct(self, ggi_color, col);
+  return INT2FIX(col->b);
+}
+
+static VALUE
+color_a(VALUE self)
+{
+  ggi_color *col;
+  Data_Get_Struct(self, ggi_color, col);
+  return INT2FIX(col->a);
+}
+
+
+
+void Init_ggi()
+{
+  mGGI = rb_define_module("GGI");
+  cVisual = rb_define_class_under(mGGI, "Visual", rb_cObject);
+  cColor = rb_define_class_under(mGGI, "Color", rb_cObject);
+
+  cEvent = rb_define_class_under(mGGI, "Event", rb_cObject);
+  cEventCommand = rb_define_class_under(cEvent, "Command", cEvent);
+  cEventExpose = rb_define_class_under(cEvent, "Expose", cEvent);
+  cEventValuator = rb_define_class_under(cEvent, "Valuator", cEvent);
+  cEventKey = rb_define_class_under(cEvent, "Key", cEvent);
+  cEventPtrMove = rb_define_class_under(cEvent, "PtrMove", cEvent);
+  cEventPtrButton = rb_define_class_under(cEvent, "PtrButton", cEvent);
+
+  eGGI = rb_define_class_under(mGGI, "Error", rb_eRuntimeError);
+
+  // define constants
+#{
+    %w(GT_TEXT GT_TRUECOLOR GT_GREYSCALE GT_PALETTE GT_STATIC_PALETTE GT_SUBSAMPLE_YUV GT_SUBSAMPLE_U_YCRBR GT_SUBSAMPLE_S_YCRBR GT_NIL
+       GT_SUB_REVERSE_ENDIAN GT_SUB_HIGHBIT_RIGHT GT_SUB_PACKED_GETPUT
+       GT_TEXT16 GT_TEXT32 GT_1BIT GT_2BIT GT_4BIT GT_8BIT GT_15BIT GT_16BIT GT_24BIT GT_32BIT GT_AUTO GT_INVALID
+       GGI_AUTO).map {|c| "  rb_define_const(mGGI, \"#{ c }\", INT2NUM(#{ c }));" }.join("\n")
+}
+
+  // define event constants
+#{
+  %w(Nothing Command Information Expose KeyPress KeyRelease KeyRepeat Key Keyboard PtrRelative PtrAbsolute PtrButtonPress PtrButtonRelease
+      PtrMove PtrButton Pointer ValRelative ValAbsolute Valuator Zero All).
+    map {|c| "  rb_define_const(mGGI, \"Em#{ c }\", INT2NUM(em#{ c }));" }.join("\n")
+}
+#{
+  %w(Nothing Command Information Expose KeyPress KeyRelease KeyRepeat PtrRelative PtrAbsolute PtrButtonPress PtrButtonRelease
+      ValRelative ValAbsolute Last).
+    map {|c| "  rb_define_const(mGGI, \"Ev#{ c }\", INT2NUM(ev#{ c }));" }.join("\n")
+}
+
+  rb_define_module_function(mGGI, "init", ggi_init, 0);
+  rb_define_module_function(mGGI, "exit", ggi_exit, 0);
+
+  rb_define_module_function(mGGI, "GT_CONSTRUCT", ggi__gt_construct, 3);
+
+  // class Color
+  rb_define_singleton_method(cColor, "new", color__new, 4);
+  rb_define_method(cColor, "r", color_r, 0);
+  rb_define_method(cColor, "g", color_g, 0);
+  rb_define_method(cColor, "b", color_b, 0);
+  rb_define_method(cColor, "a", color_a, 0);
+
+  // class Event (and subclasses)
+
+#{
+  %w( size/0 type/0 error/0 origin/0 target/0 time/0 ).defMethods("event") + 
+  %w( code/0 data/0 ).defMethods("eventCommand") +
+  %w( x/0 y/0 w/0 h/0 ).defMethods("eventExpose") +
+  %w( first/0 count/0 value/1 ).defMethods("eventValuator") +
+  %w( modifiers/0 sym/0 label/0 button/0 ).defMethods("eventKey") +
+  %w( x/0 y/0 z/0 wheel/0 ).defMethods("eventPtrMove") +
+  %w( button/0 ).defMethods("eventPtrButton")
+}
+  
+  // class Visual
+  rb_define_singleton_method(cVisual, "open", visual__open, 1);
+
+#{
+  %w( close/0 
+      setSimpleMode/4
+      setDisplayFrame/1 setWriteFrame/1 setReadFrame/1
+      getDisplayFrame/0 getWriteFrame/0 getReadFrame/0
+      mapColor/1 unmapPixel/1
+      setGCForeground/1 setGCBackground/1
+      getGCForeground/0 getGCBackground/0
+      setGCClipping/4 getGCClipping/0
+      drawPixel/2 putPixel/3 getPixel/2
+      drawHLine/3 drawVLine/3 drawLine/4
+      drawBox/4 fillscreen/0 copyBox/6 drawRect/4
+      setOrigin/2 getOrigin/0
+      putc/3 puts/3 getCharSize/0
+      getc/0 kbhit/0
+      eventPoll/2 eventsQueued/1 eventRead/1
+    ).defMethods("visual")
+}
+}

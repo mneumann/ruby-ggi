@@ -1,0 +1,15 @@
+= Todo
+* add missing functions
+* implementGGI extensions (Overlay, Blitting)
+* implement text routines for TTF fonts (ft2)
+* implement polygons and other common graphics
+* reading png images
+
+* move constants into module GGI::Constants
+* module GGI::Classes?
+* move GGI::Visual aliases into module GGI::Aliases (ggi/aliases extends GGI::Visual)
+
+= Problems
+* when doing an "include GGI", exit will be overwritten by GGI::exit (solution: define GGI::Includes or GGI:Constants for inclusion)
+* when not calling #close for Visual objects, and GGI::exit is called before the end, then GC will call #close, and fails 
+* return values > 0: what to do with them?
